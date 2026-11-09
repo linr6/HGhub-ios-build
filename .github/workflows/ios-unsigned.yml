@@ -1,0 +1,54 @@
+name: iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/ios-unsigned
+    paths:
+      - .github/workflows/ios-unsigned.yml
+      - scripts/build-ios-unsigned.py
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Apple project tools
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          command -v pod >/dev/null || brew install cocoapods
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and verify unsigned device IPA
+        run: |
+          mkdir -p artifacts
+          python3 scripts/build-ios-unsigned.py 2>&1 | tee artifacts/build.log
+      - name: Upload IPA and build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-ios-unsigned
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
