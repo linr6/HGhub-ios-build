@@ -55,8 +55,9 @@ export type PlayInfo = {
   ep_num: number;
   duration: number;
   title: string;
-  video_url: string;
+  video_url?: string;
   video_url_hevc?: string;
+  streams?: { main?: string; hevc?: string; preview?: string };
 };
 
 export type RankItem = {

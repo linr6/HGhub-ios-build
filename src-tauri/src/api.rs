@@ -23,6 +23,12 @@ impl Api {
         edge(&origin, "GET", path, None, token.as_deref()).await
     }
 
+    async fn post(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let origin = base();
+        let token = self.session.token(&origin);
+        edge(&origin, "POST", path, body, token.as_deref()).await
+    }
+
     async fn authed(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
         let origin = base();
         let token = self
@@ -358,7 +364,7 @@ pub async fn api_video(state: State<'_, Api>, id: i64) -> Result<Value, String> 
 #[tauri::command]
 pub async fn api_play(state: State<'_, Api>, id: i64, ep: u32) -> Result<Value, String> {
     state
-        .get(&format!("/api/videos/{id}/play?ep={ep}&page_texts=0"))
+        .post(&format!("/api/videos/{id}/episodes/{ep}/playback"), Some(json!({})))
         .await
 }
 

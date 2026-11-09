@@ -443,7 +443,9 @@ fn edge_operation(path: &str) -> &'static str {
     let path = path.split('?').next().unwrap_or("");
     if path.starts_with("/api/videos/category/") {
         "category"
-    } else if path.starts_with("/api/videos/") && path.ends_with("/play") {
+    } else if path.starts_with("/api/videos/")
+        && (path.ends_with("/play") || path.ends_with("/playback"))
+    {
         "play"
     } else if path == "/api/videos" {
         "feed"
@@ -728,6 +730,7 @@ mod tests {
             ("/api/videos?page=1&size=10", "feed"),
             ("/api/videos/category/private?x=secret", "category"),
             ("/api/videos/42/play?ep=1", "play"),
+            ("/api/videos/42/episodes/1/playback", "play"),
             ("/api/search?q=private-search", "search"),
             ("/api/account/loginByPassword", "account"),
             ("/unknown/private", "other"),

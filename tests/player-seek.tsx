@@ -61,7 +61,8 @@ document.addEventListener("seeking", (e) => {
 }, true);
 window.addEventListener("error", (e) => fixture.errors.push(e.message));
 api.boot = async () => ({ user: null, logged_in: false, base: "https://fixture.invalid", strict_security: true });
-api.play = async () => ({ id: 991, ep_num: 1, title: "Seek fixture", duration: 90, video_url: "https://media.fixture.invalid/list.m3u8" });
+// The current playback API supplies streams.main; video_url may be absent.
+api.play = async () => ({ id: 991, ep_num: 1, title: "Seek fixture", duration: 90, streams: { main: "https://media.fixture.invalid/list.m3u8" } });
 api.video = async () => ({
   id: 991, title: "Seek fixture", description: "", cover: "", tags: [], score: 0,
   episode_count: 1, total_episodes: 1,

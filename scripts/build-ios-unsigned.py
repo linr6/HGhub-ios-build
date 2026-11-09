@@ -196,7 +196,7 @@ def build():
             for debris in staging.rglob(".DS_Store"):
                 debris.unlink()
             version = json.loads((ROOT / "package.json").read_text())["version"]
-            ipa = ARTIFACTS / f"HGhub_{version}_ios_video_fix_arm64_unsigned.ipa"
+            ipa = ARTIFACTS / f"HGhub_{version}_ios_playback_api_fix_arm64_unsigned.ipa"
             if ipa.exists():
                 ipa.unlink()
             run(["zip", "-q", "-r", "-y", ipa, "Payload"], cwd=staging)
