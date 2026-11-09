@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, forwardRef, useState } from "react";
 import Hls from "hls.js";
-import { isLocalMedia, playlist } from "../api";
+import { isIos } from "../api";
+import { nativePlaybackError, resolvePlaybackSource } from "../playbackSource";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 
@@ -82,61 +83,69 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     setReady(false);
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    const proxied = isLocalMedia(src);
-    const url = proxied ? src : playlist(src);
-    const useHls = !url.includes("/seg?u=");
-    trace("source.load", { engine: useHls && Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay, resource: mediaResource(src) });
+    let cancelled = false;
+    resolvePlaybackSource(src).then(({ url, native }) => {
+      if (cancelled) return;
+      const useHls = !url.includes("/seg?u=");
+      trace("source.load", { engine: !native && useHls && Hls.isSupported() ? "hls.js" : "native", transport: native ? "ios_loopback" : "protocol", auto_play: autoPlay, resource: mediaResource(src) });
 
-    /* 换源时先把音量/倍速套回去：hls 重新 attach 后浏览器会把它们重置成默认值 */
-    const applySettings = () => {
-      const v = videoRef.current;
-      if (!v) return;
-      v.volume = volume;
-      v.muted = muted;
-      v.playbackRate = rate;
-    };
-    applySettings();
+      /* 换源时先把音量/倍速套回去：hls 重新 attach 后浏览器会把它们重置成默认值 */
+      const applySettings = () => {
+        const v = videoRef.current;
+        if (!v) return;
+        v.volume = volume;
+        v.muted = muted;
+        v.playbackRate = rate;
+      };
+      applySettings();
 
-    if (useHls && Hls.isSupported()) {
-      const hls = new Hls({
-        // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
-        interstitialsController: undefined,
-        contentSteeringController: undefined,
-        enableInterstitialPlayback: false,
-        enableWorker: true,
-        // Prefer standard MSE on macOS; hls.js handles MMS-only fallback and seek recovery.
-        preferManagedMediaSource: false,
-        autoStartLoad: false,
-        maxBufferLength: 30,
-        backBufferLength: 30,
-        manifestLoadingTimeOut: 20000,
-        manifestLoadingMaxRetry: 3,
-        fragLoadingMaxRetry: 4,
-      });
-      hlsRef.current = hls;
-      observeHls(hls, trace);
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (activity.isActive()) hls.startLoad();
-        if (autoPlay) activity.play("manifest_autoplay", true);
-      });
-      hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (!data.fatal) return;
-        onError?.(`${data.type}/${data.details}`);
-        if (!activity.isActive()) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else { hls.destroy(); hlsRef.current = null; }
-      });
-    } else {
-      video.src = url;
-      if (autoPlay) activity.play("native_autoplay", true);
-    }
+      if (!native && useHls && Hls.isSupported()) {
+        const hls = new Hls({
+          // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
+          interstitialsController: undefined,
+          contentSteeringController: undefined,
+          enableInterstitialPlayback: false,
+          enableWorker: true,
+          // Prefer standard MSE on macOS; hls.js handles MMS-only fallback and seek recovery.
+          preferManagedMediaSource: false,
+          autoStartLoad: false,
+          maxBufferLength: 30,
+          backBufferLength: 30,
+          manifestLoadingTimeOut: 20000,
+          manifestLoadingMaxRetry: 3,
+          fragLoadingMaxRetry: 4,
+        });
+        hlsRef.current = hls;
+        observeHls(hls, trace);
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (activity.isActive()) hls.startLoad();
+          if (autoPlay) activity.play("manifest_autoplay", true);
+        });
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (!data.fatal) return;
+          onError?.(`${data.type}/${data.details}`);
+          if (!activity.isActive()) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+          else { hls.destroy(); hlsRef.current = null; }
+        });
+      } else {
+        video.src = url;
+        if (autoPlay) activity.play("native_autoplay", true);
+      }
+    }).catch(() => {
+      if (!cancelled) { trace("source.prepare_failed"); onError?.("本机播放通道启动失败，请重新打开 App"); }
+    });
 
     return () => {
+      cancelled = true;
       trace("source.cleanup");
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
@@ -160,7 +169,7 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
       loop={loop}
       onClick={onClick}
       className={`w-full h-full bg-black ${fit === "cover" ? "object-cover" : "object-contain"} ${className}`}
-      style={{ opacity: ready ? 1 : 0, transition: "opacity .35s" }}
+      style={isIos ? undefined : { opacity: ready ? 1 : 0, transition: "opacity .35s" }}
       onLoadedData={(e) => { setReady(true); reapply(e.target as HTMLVideoElement); }}
       onTimeUpdate={(e) => onTime?.((e.target as HTMLVideoElement).currentTime)}
       onLoadedMetadata={(e) => {
@@ -174,6 +183,10 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
       onWaiting={() => onWaiting?.()}
       onPlaying={() => { if (activity.isActive()) onPlaying?.(); }}
       onEnded={() => { if (activity.isActive()) onEnded?.(); }}
+      onError={(e) => {
+        const video = e.currentTarget;
+        if (!hlsRef.current && video.error && video.getAttribute("src")) onError?.(nativePlaybackError(video));
+      }}
     />
   );
 });

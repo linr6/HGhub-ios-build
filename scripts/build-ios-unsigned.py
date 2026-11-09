@@ -74,6 +74,9 @@ def verify(ipa):
         require(len(plists) == 1, "Expected exactly one Payload/*.app/Info.plist")
         app = plists[0].rsplit("/", 1)[0]
         info = plistlib.loads(archive.read(plists[0]))
+        ats = info.get("NSAppTransportSecurity", {})
+        require(ats.get("NSAllowsLocalNetworking") is True, "iOS loopback networking is not enabled")
+        require(ats.get("NSAllowsArbitraryLoadsForMedia") is True, "Native HTTP media transport is not enabled")
         require(info.get("CFBundleIdentifier") == "com.hghub.huangguo",
                 "Unexpected bundle identifier")
         require(float(".".join(info.get("MinimumOSVersion", "0").split(".")[:2])) >= 15,
@@ -103,6 +106,7 @@ def verify(ipa):
             "bytes": ipa.stat().st_size,
             "sha256": hashlib.sha256(ipa.read_bytes()).hexdigest(),
             "iphone_installation_tested": False,
+            "ios_loopback_transport_configured": True,
         })
     return metadata
 
@@ -170,7 +174,7 @@ def build():
             for debris in staging.rglob(".DS_Store"):
                 debris.unlink()
             version = json.loads((ROOT / "package.json").read_text())["version"]
-            ipa = ARTIFACTS / f"HGhub_{version}_ios_arm64_unsigned.ipa"
+            ipa = ARTIFACTS / f"HGhub_{version}_ios_video_fix_arm64_unsigned.ipa"
             if ipa.exists():
                 ipa.unlink()
             run(["zip", "-q", "-r", "-y", ipa, "Payload"], cwd=staging)

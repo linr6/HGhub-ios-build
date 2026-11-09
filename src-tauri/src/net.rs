@@ -206,6 +206,16 @@ pub async fn get(
     accept: Option<&str>,
     referer: Option<&str>,
 ) -> Result<reqwest::Response, String> {
+    get_with_range(raw, timeout, accept, referer, None).await
+}
+
+async fn get_with_range(
+    raw: &str,
+    timeout: Duration,
+    accept: Option<&str>,
+    referer: Option<&str>,
+    range: Option<&str>,
+) -> Result<reqwest::Response, String> {
     tokio::time::timeout(timeout, async {
         let policy_error = |phase: &str, error: String| {
             crate::playback_log::record("network.target_failed", json!({"resource": crate::playback_log::resource_id(raw), "phase": phase, "error_kind": crate::playback_log::error_kind(&error)}));
@@ -222,6 +232,9 @@ pub async fn get(
             }
             if let Some(value) = referer {
                 request = request.header("Referer", value);
+            }
+            if let Some(value) = range {
+                request = request.header("Range", value);
             }
             let response = request.send().await.map_err(|e| err_text(&e))?;
             if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
@@ -613,6 +626,19 @@ pub async fn edge(
 
 /// 拉原始字节（图片 / m3u8 / 分片）。
 pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String> {
+    let resource = fetch_media_bytes(url, None).await?;
+    Ok((resource.content_type, resource.bytes))
+}
+
+pub struct MediaBytes {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub content_range: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// Preserve byte ranges for AVFoundation's media probes, HLS BYTERANGE and MP4 seeking.
+pub async fn fetch_media_bytes(url: &str, range: Option<&str>) -> Result<MediaBytes, String> {
     static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let request = NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let resource = crate::playback_log::resource_id(url);
@@ -631,10 +657,10 @@ pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String>
             let mut status = None;
             let mut headers_ms = None;
             let result = async {
-                let resp = get(&url, Duration::from_secs(20), None, Some(&referer)).await?;
+                let resp = get_with_range(&url, Duration::from_secs(20), None, Some(&referer), range).await?;
                 status = Some(resp.status().as_u16());
                 headers_ms = Some(started.elapsed().as_millis() as u64);
-                if !resp.status().is_success() {
+                if !resp.status().is_success() && !(range.is_some() && resp.status().as_u16() == 416) {
                     return Err(format!("HTTP {}", resp.status()));
                 }
                 let ctype = resp
@@ -642,10 +668,12 @@ pub async fn fetch_bytes(url: &str) -> Result<(Option<String>, Vec<u8>), String>
                     .get(reqwest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
+                let content_range = resp.headers().get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok()).map(str::to_string);
                 let bytes = resp.bytes().await.map_err(|e| err_text(&e))?.to_vec();
-                Ok((ctype, bytes))
+                Ok(MediaBytes { status: status.unwrap(), content_type: ctype, content_range, bytes })
             }.await;
-            crate::playback_log::record("network.end", json!({"request": request, "resource": resource, "attempt": attempt, "status": status, "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": result.as_ref().ok().map(|(_, bytes)| bytes.len()), "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e))}));
+            crate::playback_log::record("network.end", json!({"request": request, "resource": resource, "attempt": attempt, "status": status, "headers_ms": headers_ms, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": result.as_ref().ok().map(|r| r.bytes.len()), "error_kind": result.as_ref().err().map(|e: &String| crate::playback_log::error_kind(e))}));
             result
         }
     })

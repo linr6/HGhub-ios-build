@@ -186,7 +186,9 @@ fn rewrite_uri_attr(line: &str, prefix: &str) -> String {
 
 /// 取 m3u8 并把 key / 分片地址改写到本地协议。
 pub async fn load_playlist(url: &str, prefix: &str) -> Result<Arc<String>, String> {
-    if let Some(hit) = PL_CACHE.lock().unwrap().get(url).cloned() {
+    // Native iOS HTTP playback and the WebView protocol must never share rewritten URLs.
+    let cache_key = format!("{prefix}\n{url}");
+    if let Some(hit) = PL_CACHE.lock().unwrap().get(&cache_key).cloned() {
         return Ok(hit);
     }
     let (_, bytes) = fetch_bytes(url).await?;
@@ -195,11 +197,11 @@ pub async fn load_playlist(url: &str, prefix: &str) -> Result<Arc<String>, Strin
         return Err("响应不是 HLS 播放列表".into());
     }
     let arc = Arc::new(rewrite_playlist(url, text, prefix));
-    cache_put(&PL_CACHE, url.to_string(), arc.clone(), PL_CACHE_MAX);
+    cache_put(&PL_CACHE, cache_key, arc.clone(), PL_CACHE_MAX);
     Ok(arc)
 }
 
-fn rewrite_playlist(url: &str, text: &str, prefix: &str) -> String {
+pub(crate) fn rewrite_playlist(url: &str, text: &str, prefix: &str) -> String {
     let mut out = String::with_capacity(text.len() + 512);
     for raw in text.trim_start_matches('\u{feff}').lines() {
         let line = raw.trim_end();
@@ -313,6 +315,10 @@ fn segment_response(
 /// `origin` 是本平台自定义协议的完整基址，见 [`LOCAL_ORIGIN`]；用于改写 m3u8 里的
 /// 分片与 key 地址。正常情况下调用方直接传 [`LOCAL_ORIGIN`]。
 pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> {
+    handle_with_range(path, query, origin, None).await
+}
+
+pub async fn handle_with_range(path: &str, query: &str, origin: &str, range: Option<&str>) -> Response<Vec<u8>> {
     let target = query
         .split('&')
         .find_map(|kv| kv.strip_prefix("u="))
@@ -350,8 +356,18 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
             ),
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
-        "/seg" => match fetch_bytes(&target).await {
-            Ok((ctype, bytes)) => segment_response(&target, ctype.as_deref(), bytes, origin),
+        "/seg" => match crate::net::fetch_media_bytes(&target, range).await {
+            Ok(resource) => {
+                let mut response = if resource.status == 200 {
+                    segment_response(&target, resource.content_type.as_deref(), resource.bytes, origin)
+                } else {
+                    respond(resource.status, resource.content_type.as_deref().unwrap_or("application/octet-stream"), resource.bytes, "no-store")
+                };
+                if let Some(value) = resource.content_range.and_then(|s| tauri::http::HeaderValue::from_str(&s).ok()) {
+                    response.headers_mut().insert("Content-Range", value);
+                }
+                apply_range(response, range)
+            },
             Err(e) => respond(502, "text/plain", e.into_bytes(), "no-store"),
         },
         _ => respond(404, "text/plain", b"not found".to_vec(), "no-store"),
@@ -360,6 +376,37 @@ pub async fn handle(path: &str, query: &str, origin: &str) -> Response<Vec<u8>> 
         "proxy.end",
         serde_json::json!({"route": route, "resource": crate::playback_log::resource_id(&target), "status": response.status().as_u16(), "bytes": response.body().len(), "elapsed_ms": started.elapsed().as_millis() as u64}),
     );
+    response
+}
+
+/// Some CDNs ignore Range. Synthesize a valid single-range response from their full body.
+pub(crate) fn apply_range(mut response: Response<Vec<u8>>, range: Option<&str>) -> Response<Vec<u8>> {
+    let playlist = response.headers().get("Content-Type").and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("mpegurl"));
+    if response.status() != StatusCode::OK || playlist { return response; }
+    response.headers_mut().insert("Accept-Ranges", tauri::http::HeaderValue::from_static("bytes"));
+    let Some(range) = range else { return response; };
+    let length = response.body().len();
+    let bounds = (|| {
+        let (start, end) = range.strip_prefix("bytes=")?.split_once('-')?;
+        if length == 0 { return None; }
+        if start.is_empty() {
+            let suffix = end.parse::<usize>().ok()?;
+            return (suffix > 0).then_some((length.saturating_sub(suffix), length - 1));
+        }
+        let start = start.parse::<usize>().ok()?;
+        let end = if end.is_empty() { length - 1 } else { end.parse::<usize>().ok()?.min(length - 1) };
+        (start < length && start <= end).then_some((start, end))
+    })();
+    if let Some((start, end)) = bounds {
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+        response.headers_mut().insert("Content-Range", format!("bytes {start}-{end}/{length}").parse().unwrap());
+        *response.body_mut() = response.body()[start..=end].to_vec();
+    } else {
+        *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+        response.headers_mut().insert("Content-Range", format!("bytes */{length}").parse().unwrap());
+        response.body_mut().clear();
+    }
     response
 }
 

@@ -2,7 +2,14 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "iOS": {
-      "minimumSystemVersion": "15.0"
+      "minimumSystemVersion": "15.0",
+      "infoPlist": "Info.ios.plist"
+    }
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: hg: http://hg.localhost https://hg.localhost; media-src http://127.0.0.1:* 'self' blob: hg: http://hg.localhost https://hg.localhost; connect-src ipc: http://ipc.localhost https://ipc.localhost hg: http://hg.localhost https://hg.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'",
+      "devCsp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: hg: http://hg.localhost https://hg.localhost; media-src http://127.0.0.1:* 'self' blob: hg: http://hg.localhost https://hg.localhost; connect-src 'self' ws: wss: ipc: http://ipc.localhost https://ipc.localhost hg: http://hg.localhost https://hg.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
     }
   }
 }

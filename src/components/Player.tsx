@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
-import { fmtTime, playlist } from "../api";
+import { fmtTime } from "../api";
+import { nativePlaybackError, resolvePlaybackSource } from "../playbackSource";
 import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
 import { usePlaybackActivity } from "../usePlaybackActivity";
 import { useSeekInput } from "../useSeekInput";
@@ -55,55 +56,66 @@ export default function Player({
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
-    const url = playlist(src);
-    trace("source.load", { engine: Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay });
+    let cancelled = false;
+    setErrMsg("");
+    resolvePlaybackSource(src).then(({ url, native }) => {
+      if (cancelled) return;
+      const useHls = !native && !url.includes("/seg?u=") && Hls.isSupported();
+      trace("source.load", { engine: useHls ? "hls.js" : "native", transport: native ? "ios_loopback" : "protocol", auto_play: autoPlay });
 
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
-        interstitialsController: undefined,
-        contentSteeringController: undefined,
-        enableInterstitialPlayback: false,
-        enableWorker: true,
-        // Keep the same macOS seek workaround as the shared player.
-        preferManagedMediaSource: false,
-        autoStartLoad: false,
-        lowLatencyMode: false,
-        maxBufferLength: 24,
-        backBufferLength: 30,
-        manifestLoadingTimeOut: 20000,
-        manifestLoadingMaxRetry: 3,
-        fragLoadingMaxRetry: 4,
-      });
-      hlsRef.current = hls;
-      observeHls(hls, trace);
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (activity.isActive()) hls.startLoad();
-        if (autoPlay) activity.play("manifest_autoplay", true);
-      });
-      hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (!data.fatal) return;
-        const detail = `${data.type}/${data.details}/${data.response?.code ?? ""}/${String(data.reason ?? "").slice(0, 80)}`;
-        (window as unknown as { __hlsErr?: string }).__hlsErr = detail;
-        setErrMsg(detail);
-        if (!activity.isActive()) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-        else { hls.destroy(); hlsRef.current = null; }
-      });
-    } else {
-      // Safari / 部分 WebView 原生支持 HLS
-      video.src = url;
-      if (autoPlay) activity.play("native_autoplay", true);
-    }
+      if (useHls) {
+        const hls = new Hls({
+          // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
+          interstitialsController: undefined,
+          contentSteeringController: undefined,
+          enableInterstitialPlayback: false,
+          enableWorker: true,
+          // Keep the same macOS seek workaround as the shared player.
+          preferManagedMediaSource: false,
+          autoStartLoad: false,
+          lowLatencyMode: false,
+          maxBufferLength: 24,
+          backBufferLength: 30,
+          manifestLoadingTimeOut: 20000,
+          manifestLoadingMaxRetry: 3,
+          fragLoadingMaxRetry: 4,
+        });
+        hlsRef.current = hls;
+        observeHls(hls, trace);
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (activity.isActive()) hls.startLoad();
+          if (autoPlay) activity.play("manifest_autoplay", true);
+        });
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (!data.fatal) return;
+          const detail = `${data.type}/${data.details}/${data.response?.code ?? ""}/${String(data.reason ?? "").slice(0, 80)}`;
+          (window as unknown as { __hlsErr?: string }).__hlsErr = detail;
+          setErrMsg(detail);
+          if (!activity.isActive()) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+          else { hls.destroy(); hlsRef.current = null; }
+        });
+      } else {
+        // Safari / 部分 WebView 原生支持 HLS
+        video.src = url;
+        if (autoPlay) activity.play("native_autoplay", true);
+      }
+    }).catch(() => {
+      if (!cancelled) { trace("source.prepare_failed"); setErrMsg("本机播放通道启动失败，请重新打开 App"); }
+    });
 
     return () => {
+      cancelled = true;
       trace("source.cleanup");
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
     };
   }, [src, autoPlay]);
 
@@ -162,6 +174,10 @@ export default function Player({
         onTimeUpdate={(e) => setTime((e.target as HTMLVideoElement).currentTime)}
         onLoadedMetadata={(e) => setDuration((e.target as HTMLVideoElement).duration || 0)}
         onEnded={() => { if (activity.isActive()) onEnded?.(); }}
+        onError={(e) => {
+          const video = e.currentTarget;
+          if (!hlsRef.current && video.error && video.getAttribute("src")) { setWaiting(false); setErrMsg(nativePlaybackError(video)); }
+        }}
       />
 
       {errMsg && (

@@ -8,6 +8,10 @@ on:
     paths:
       - .github/workflows/ios-unsigned.yml
       - scripts/build-ios-unsigned.py
+      - src/**
+      - src-tauri/**
+      - tests/ios-playback.*
+      - scripts/test-ios-playback.mjs
 
 permissions:
   contents: read
@@ -19,6 +23,7 @@ jobs:
     env:
       CI: "true"
       CARGO_TERM_COLOR: always
+      IPHONEOS_DEPLOYMENT_TARGET: "15.0"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -40,6 +45,10 @@ jobs:
           command -v pod >/dev/null || brew install cocoapods
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+      - name: Frontend checks and Rust media regression tests
+        run: |
+          pnpm build
+          cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
       - name: Build and verify unsigned device IPA
         run: |
           mkdir -p artifacts

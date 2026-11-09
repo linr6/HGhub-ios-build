@@ -1,4 +1,5 @@
 mod api;
+mod ios_media;
 mod lines;
 mod logging;
 #[cfg(target_os = "macos")]
@@ -126,6 +127,7 @@ pub fn run() {
             });
         })
         .invoke_handler(tauri::generate_handler![
+            ios_media::ios_media_origin,
             api::app_boot,
             playback_log::playback_log_status,
             playback_log::playback_log_set,
