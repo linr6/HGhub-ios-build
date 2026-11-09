@@ -51,6 +51,7 @@ jobs:
           cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
       - name: Build and verify unsigned device IPA
         run: |
+          set -o pipefail
           mkdir -p artifacts
           python3 scripts/build-ios-unsigned.py 2>&1 | tee artifacts/build.log
       - name: Upload IPA and build evidence

@@ -36,6 +36,23 @@ def run(arguments, cwd=ROOT, env=None, capture=False):
     return result.stdout.strip() if capture else None
 
 
+def merge_plist(base, extra):
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge_plist(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def configure_ios_plist(path):
+    # `tauri ios build` normally merges this file. Our direct Xcode build must do it too.
+    config = json.loads((TAURI / "tauri.ios.conf.json").read_text(encoding="utf-8"))
+    overlay = TAURI / config["bundle"]["iOS"]["infoPlist"]
+    info = merge_plist(plistlib.loads(path.read_bytes()), plistlib.loads(overlay.read_bytes()))
+    path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_XML))
+
+
 def macho_metadata(binary):
     require(len(binary) >= 32, "Mach-O header is missing")
     header = struct.unpack_from("<8I", binary)
@@ -87,6 +104,8 @@ def verify(ipa):
                 "Executable permissions were lost during packaging")
         binary = archive.read(executable)
         metadata = macho_metadata(binary)
+        require(b"http://127.0.0.1:*" in binary, "Embedded iOS media CSP is missing")
+        require(b"ios.http.request" in binary, "Native HTTP media bridge is missing")
         require(b"assets/index-" in binary, "Embedded frontend assets are missing")
         expected_assets = sorted((ROOT / "dist" / "assets").glob("index-*"))
         for asset in expected_assets:
@@ -107,6 +126,8 @@ def verify(ipa):
             "sha256": hashlib.sha256(ipa.read_bytes()).hexdigest(),
             "iphone_installation_tested": False,
             "ios_loopback_transport_configured": True,
+            "ios_loopback_csp_embedded": True,
+            "ios_http_bridge_embedded": True,
         })
     return metadata
 
@@ -123,6 +144,7 @@ def build():
     pbx = project / "project.pbxproj"
     require(pbx.is_file(), "Generated Xcode project is missing")
     original_pbx = pbx.read_bytes()
+    configure_ios_plist(apple / "huangguo-client_iOS" / "Info.plist")
 
     with tempfile.TemporaryDirectory(prefix="hghub-ios-") as temporary:
         temporary = Path(temporary)
